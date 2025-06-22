@@ -126,7 +126,7 @@ class SparseSampler:
         data['sparse_mask'] = sparse_mask.unsqueeze(0).unsqueeze(0)
         data['cover_mask'] = cover_mask.unsqueeze(0).unsqueeze(0)
         
-        # Check samples and move the points to target device.
+        # Check samples and move points to the target device.
         if sparse_mask.sum() < K:
             raise ValueError("There are not enough known points.")
         data = {k: v.to(self.device) for k, v in data.items() if v is not None}
@@ -138,7 +138,7 @@ class SparseSampler:
         
         if height != low_height or width != low_width:
             pattern = 'downscale_'
-        #     print("============================ Testing with known low depth. ============================")
+            # print("============================ Testing with known low depth. ============================")
         # else:
         #     print(f"============================ Testing with {pattern}. ============================")
         
@@ -163,9 +163,10 @@ class SparseSampler:
             
         elif re.fullmatch(r'^downscale_\d*$', pattern):
             prior = prior.unsqueeze(0)
-            prior_mask = prior > self.min_depth
             
             if pattern != 'downscale_':
+                prior_mask = prior > self.min_depth
+                
                 factor = pattern.split("_")[-1]
                 factor = int(factor)
             
@@ -187,8 +188,9 @@ class SparseSampler:
             sparse_depth = torch.zeros((height, width), dtype=torch.float32)
             sparse_depth[down_mask] = prior.flatten()
             
-            # Filter the sparse mask with valid mask.
-            sparse_mask = down_mask
+            sparse_mask = sparse_depth > self.min_depth
+            # Filter the sparse mask with valid mask if sampled manually.
+            if pattern != 'downscale_': sparse_mask &= prior_mask.squeeze(0)
             sparse_depth = sparse_depth * sparse_mask.type_as(sparse_depth)
             cover_mask = torch.zeros_like(sparse_mask)
             

@@ -2,6 +2,7 @@ import torch
 import re
 import torch_cluster
 import warnings
+import time
 from typing import Dict, Tuple
 
 from .utils import (
@@ -22,7 +23,6 @@ class DepthCompletion(torch.nn.Module):
         
         self.set_device(device)
         self.depth_model = self.init_depth_model(fmde_path)
-        self.times1 = []
         
     def set_device(self, device=None):
         if device is not None:
@@ -74,7 +74,15 @@ class DepthCompletion(torch.nn.Module):
         else:
             # heit = sparse_depths.shape[-2] // 14 * 14
             heit = 518
+            if hasattr(self, "timer"):
+                torch.cuda.synchronize()
+                t0 = time.time()
             pred_disparities = self.depth_model(int_images, heit, device=self.device)
+            if hasattr(self, "timer"):
+                torch.cuda.synchronize()
+                t1 = time.time()
+                self.timer.append(t1 - t0)
+                
             pred_disparities = pred_disparities.squeeze(1)
             
         # Preprocess sparse_depths and prior depths.

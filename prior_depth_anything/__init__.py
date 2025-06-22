@@ -8,6 +8,7 @@ from datetime import datetime
 from PIL import Image
 import glob
 from typing import Union
+import time
 
 from .depth_anything_v2 import build_backbone
 from .depth_completion import DepthCompletion
@@ -75,7 +76,7 @@ class PriorDepthAnything(nn.Module):
             self.model = self.load_checkpoints(model, ckpt_dir, self.device)
             
         self.sampler = SparseSampler(device=device)
-        
+    
     def load_checkpoints(self, model, ckpt_dir, device='cuda:0'):
         ckpt_name = f'prior_depth_anything_{self.args.conditioned_model_size}.pth'
         if ckpt_dir is None:
@@ -131,7 +132,15 @@ class PriorDepthAnything(nn.Module):
             
         # heit = sparse_depths.shape[-2] // 14 * 14
         heit = 518
+        if hasattr(self, "timer"):
+            torch.cuda.synchronize()
+            t0 = time.time()
         metric_disparities = self.model(images, heit, condition=condition, device=self.device)
+        if hasattr(self, "timer"):
+            torch.cuda.synchronize()
+            t1 = time.time()
+            self.timer.append(t1 - t0)
+            
         metric_depths = disparity2depth(metric_disparities)
         if self.args.normalize_depth:
             metric_depths = metric_depths * denom + masked_min
