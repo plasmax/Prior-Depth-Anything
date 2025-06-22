@@ -1,5 +1,20 @@
 # .github/workflows/package_torchscript.yml
-name: Package TorchScript Model (torch-2.2)
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Action to turn the “Prior-Depth-Anything ViT-B” checkpoint into a
+# TorchScript file (prior_depth_anything_vitb.pt) and upload it as an artifact.
+#
+# WHY CPU WHEELS?
+# • ubuntu-latest runners have *no* NVIDIA GPU or CUDA toolkit.
+# • TorchScript is device-agnostic; scripting on CPU is fine even if you later
+#   load it on GPU (provided the consumer supports GPU execution).
+# • Nuke’s CatFileCreator is CPU-only, so a CPU build is safest.
+#
+# WANT CUDA?
+# • Use a self-hosted runner that has CUDA installed, e.g.:
+#     runs-on: [self-hosted, gpu]
+# • Replace the +cpu wheels with the matching cu11X/cu12X wheels.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Package TorchScript Model
 
 on:
   workflow_dispatch:
@@ -7,51 +22,50 @@ on:
 jobs:
   export-torchscript:
     runs-on: ubuntu-latest
+
     steps:
+    # 1 ▸ Source
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - uses: actions/checkout@v4
-
-    - uses: actions/setup-python@v5
+    # 2 ▸ Python 3.9
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
         python-version: "3.9"
 
-    # -------------------------------------------------------------
-    # 1) Core deps – install torch first so later builds can import it
-    # -------------------------------------------------------------
-    - name: Install Torch & TorchVision (CPU)
+    # 3 ▸ Install PyTorch & TorchVision (CPU)
+    - name: Install PyTorch (CPU)
       run: |
         python -m pip install --upgrade pip
         pip install torch==2.2.2+cpu torchvision==0.17.2+cpu \
           --index-url https://download.pytorch.org/whl/cpu
 
-    # -------------------------------------------------------------
-    # 2) Pre-built PyG wheels that match torch-2.2
-    # -------------------------------------------------------------
-    - name: Install PyG wheels
+    # 4 ▸ Pre-built PyG wheels that match torch-2.2.*
+    - name: Install PyG wheels (CPU)
       run: |
-        # Use the official PyG index that hosts pre-compiled binaries
         PYG_IDX="https://data.pyg.org/whl/torch-2.2.0+cpu.html"
         pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv \
           -f ${PYG_IDX}
 
-    # -------------------------------------------------------------
-    # 3) Everything else – tell pip NOT to resolve deps again
-    # -------------------------------------------------------------
-    - name: Install remaining requirements
+    # 5 ▸ Remaining requirements (without clobbering Torch)
+    - name: Install remaining Python deps
       run: |
-        pip install -r requirements.txt --no-deps
-        # Prior-Depth-Anything itself
-        pip install "git+https://github.com/SpatialVision/Prior-Depth-Anything.git" --no-deps
+        # Tell pip that torch/torchvision are fixed.
+        echo "torch==2.2.2" > torch_constraints.txt
+        echo "torchvision==0.17.2" >> torch_constraints.txt
 
-    # -------------------------------------------------------------
-    # 4) Download checkpoint and export TorchScript
-    # -------------------------------------------------------------
-    - name: Fetch checkpoint
+        pip install -r requirements.txt -c torch_constraints.txt
+        pip install "git+https://github.com/SpatialVision/Prior-Depth-Anything.git" -c torch_constraints.txt
+
+    # 6 ▸ Download checkpoint
+    - name: Fetch pretrained checkpoint
       run: |
         mkdir -p checkpoints
-        wget -O checkpoints/prior_depth_anything_vitb.pth \
+        wget -q -O checkpoints/prior_depth_anything_vitb.pth \
           https://huggingface.co/Rain729/Prior-Depth-Anything/resolve/main/prior_depth_anything_vitb.pth
 
+    # 7 ▸ Export TorchScript
     - name: Export TorchScript
       run: |
         python - <<'PY'
@@ -59,13 +73,18 @@ jobs:
         from prior_depth_anything import PriorDepthAnything
 
         ckpt = "checkpoints/prior_depth_anything_vitb.pth"
-        model = PriorDepthAnything(device="cpu",
-                                   frozen_model_size="vitb",
-                                   conditioned_model_size="vitb",
-                                   coarse_only=False)
+
+        # Build architecture
+        model = PriorDepthAnything(
+            device="cpu",
+            frozen_model_size="vitb",
+            conditioned_model_size="vitb",
+            coarse_only=False,
+        )
         model.load_state_dict(torch.load(ckpt, map_location="cpu"), strict=False)
         model.eval()
 
+        # Return only the depth tensor
         class DepthOnly(torch.nn.Module):
             def __init__(self, net): super().__init__(); self.net = net
             def forward(self, x):
@@ -73,10 +92,12 @@ jobs:
                 return d["predicted_depth"] if isinstance(d, dict) else d
 
         torch.jit.script(DepthOnly(model)).save("prior_depth_anything_vitb.pt")
-        pathlib.Path("prior_depth_anything_vitb.pt").stat()  # prove file exists
+        print("✓ TorchScript written:", pathlib.Path("prior_depth_anything_vitb.pt").resolve())
         PY
 
-    - uses: actions/upload-artifact@v4
+    # 8 ▸ Upload artifact
+    - name: Upload TorchScript artifact
+      uses: actions/upload-artifact@v4
       with:
         name: prior_depth_anything_vitb_pt
         path: prior_depth_anything_vitb.pt
