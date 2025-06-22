@@ -1,0 +1,63 @@
+# .github/workflows/package_depth_anything_v2_torchscript.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Export Depth-Anything-V2 (ViT-B) to TorchScript and upload the .pt artifact
+# ─────────────────────────────────────────────────────────────────────────────
+name: Package Depth-Anything-V2 TorchScript
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export-torchscript:
+    runs-on: ubuntu-latest           # change to  [self-hosted, gpu]  if you have a CUDA runner
+
+    steps:
+    # 1 ▸ Repo
+    - uses: actions/checkout@v4
+
+    # 2 ▸ Python 3.9
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.9"
+
+    # 3 ▸ Core wheels (CPU build — adjust if tracing on GPU)
+    - name: Install PyTorch 2.2.2 + TorchVision
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch==2.2.2+cpu torchvision==0.17.2+cpu \
+          --index-url https://download.pytorch.org/whl/cpu
+
+    # 4 ▸ (Optional) PyG wheels matching torch-2.2.2
+    - name: Install PyG wheels
+      run: |
+        PYG_IDX="https://data.pyg.org/whl/torch-2.2.0+cpu.html"
+        pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv \
+          -f ${PYG_IDX}
+
+    # 5 ▸ Project requirements & editable install
+    - name: Install project requirements
+      run: |
+        printf "torch==2.2.2\ntorchvision==0.17.2\n" > torch_constraints.txt
+        pip install -r requirements.txt -c torch_constraints.txt
+        pip install -e . -c torch_constraints.txt
+
+    # 6 ▸ Fetch checkpoint
+    - name: Download Depth-Anything-V2 ViT-B checkpoint
+      run: |
+        mkdir -p checkpoints
+        wget -q -O checkpoints/depth_anything_v2_vitb.pth \
+          https://huggingface.co/depth-anything/Depth-Anything-V2-Base/resolve/main/depth_anything_v2_vitb.pth
+
+    # 7 ▸ Trace → TorchScript
+    - name: Export TorchScript
+      run: |
+        python .github/scripts/convert_to_torchscript.py \
+          --checkpoint checkpoints/depth_anything_v2_vitb.pth \
+          --output depth_anything_v2_vitb.pt \
+          --device cpu
+
+    # 8 ▸ Publish artifact
+    - uses: actions/upload-artifact@v4
+      with:
+        name: depth_anything_v2_vitb_pt
+        path: depth_anything_v2_vitb.pt
