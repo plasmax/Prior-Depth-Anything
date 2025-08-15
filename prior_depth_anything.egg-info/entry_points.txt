@@ -1,0 +1,2 @@
+[console_scripts]
+priorda = prior_depth_anything.cli:create_and_execute

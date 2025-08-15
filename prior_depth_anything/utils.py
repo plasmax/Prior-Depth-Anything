@@ -7,24 +7,48 @@ import matplotlib
 
 @dataclass
 class Arguments:
-    K: int = field(default=5, metadata={"help": "K value of KNN"})
+    K: int = field(
+        default=5, 
+        metadata={"help": "K value of KNN"}
+    )
     conditioned_model_size: str = field(
-        default="vitb", metadata={"help": "Size of conditioned model."})
+        default="vitb", 
+        metadata={"help": "Size of conditioned model."}
+    )
     frozen_model_size: str = field(
-        default="vitb", metadata={"help": "Size of frozen model."})
+        default="vitb", 
+        metadata={"help": "Size of frozen model."}
+    )
     normalize_depth: bool = field(
-        default=True, metadata={"help": "Whether to normalize depth."})
+        default=True, 
+        metadata={"help": "Whether to normalize depth."}
+    )
     normalize_confidence: bool = field(
-        default=True, metadata={"help": "Whether to normalize confidence."})
-    err_condition: bool = field(
-        default=True, metadata={"help": "Whether to use confidence/error as condition."})
+        default=True, 
+        metadata={"help": "Whether to normalize confidence."}
+    )
+    extra_condition: bool = field(
+        default="spmask", 
+        metadata={"help": "Whether to use error or spmask as condition."}
+    )
     double_global: bool = field(
-        default=False, metadata={"help": "Whether to use double globally-aligned conditions."})
+        default=False, 
+        metadata={"help": "Whether to use double globally-aligned conditions."}
+    )
 
     repo_name: str = field(
         default='Rain729/Prior-Depth-Anything', metadata={"help": "Name of hf-repo."})
     log_dir: str = field(
         default='output', metadata={"help": "The root path to save visualization results."})
+    # down_fill_mode: str = field(
+    #     default='linear', 
+    #     metadata={
+    #         "help": (
+    #             "The mode to fill in the vacancy in the prior. Only works for `pattern='^downscale_\d*$'`. "
+    #             "Choices=('knn', 'global', 'linear')"
+    #         )
+    #     }
+    # )
     
     
 # ******************** disparity space ********************
@@ -55,7 +79,11 @@ def chw2hwc(chw):
     return hwc
 
 def colorize_depth_maps(
-        depth_map, min_depth, max_depth, cmap="Spectral", valid_mask=None
+        depth_map, 
+        min_depth, 
+        max_depth, 
+        cmap="Spectral", 
+        valid_mask=None
     ):
         """
         Colorize depth maps.

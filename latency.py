@@ -54,7 +54,8 @@ if __name__ == '__main__':
     pattern = "500"
     for img, dpt in zip(image_paths, depth_paths):
         data = priorda.sampler(
-            image=img, prior=dpt,
+            image=img, 
+            prior=dpt,
             pattern=pattern
         )
         
@@ -64,8 +65,12 @@ if __name__ == '__main__':
         torch.cuda.synchronize()
         t0 = time.time()
         pred_depth = priorda(
-            images=rgb, sparse_depths=sparse_depth, prior_depths=prior_depth,
-            sparse_masks=sparse_mask, cover_masks=cover_mask, pattern=pattern
+            images=rgb, 
+            sparse_depths=sparse_depth, 
+            prior_depths=prior_depth,
+            sparse_masks=sparse_mask, 
+            cover_masks=cover_mask, 
+            pattern=pattern
         )
         torch.cuda.synchronize()
         t1 = time.time()

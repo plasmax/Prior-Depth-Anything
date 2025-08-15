@@ -3,12 +3,13 @@ import re
 import torch_cluster
 import warnings
 import time
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 from .utils import (
     depth2disparity,
     disparity2depth
 )
+from utils import save_vis
 
 class DepthCompletion(torch.nn.Module):
     @staticmethod
@@ -34,7 +35,14 @@ class DepthCompletion(torch.nn.Module):
         else:
             self.device = torch.device('cpu')
         
-    def unify_format(self, images, sparse_depths, sparse_masks, cover_masks, prior_depths, geometric_depths):
+    def unify_format(self, 
+        images: torch.Tensor, 
+        sparse_depths: torch.Tensor, 
+        sparse_masks: torch.Tensor, 
+        cover_masks: Optional[torch.Tensor], 
+        prior_depths: Optional[torch.Tensor], 
+        geometric_depths: Optional[torch.Tensor]
+    ):
         # Tune the shape of the tensors.
         if images.max() <= 1: images = (images * 255)
         if images.dtype != torch.uint8: images = images.to(torch.uint8)
@@ -43,12 +51,12 @@ class DepthCompletion(torch.nn.Module):
         if len(sparse_masks.shape) == 4:
             sparse_masks = sparse_masks.squeeze(dim=1)
         
+        if cover_masks is not None and len(cover_masks.shape) == 4:
+            cover_masks = cover_masks.squeeze(dim=1)
         if prior_depths is not None and len(prior_depths.shape) == 4:
             prior_depths = prior_depths.squeeze(dim=1)
         if geometric_depths is not None and len(geometric_depths.shape) == 4:
             geometric_depths = geometric_depths.squeeze(dim=1)
-        if cover_masks is not None and len(cover_masks.shape) == 4:
-            cover_masks = cover_masks.squeeze(dim=1)
             
         # Move the tensors to the target device.
         images = images.to(self.device)
@@ -57,8 +65,14 @@ class DepthCompletion(torch.nn.Module):
         return images, sparse_depths, sparse_masks, cover_masks, prior_depths, geometric_depths
     
     @torch.no_grad()
-    def preprocess(self, images: torch.Tensor, sparse_depths: torch.Tensor, sparse_masks: torch.Tensor, 
-                   cover_masks=None, prior_depths=None, geometric_depths=None):
+    def preprocess(self, 
+        images: torch.Tensor, 
+        sparse_depths: torch.Tensor, 
+        sparse_masks: torch.Tensor, 
+        cover_masks: Optional[torch.Tensor] = None, 
+        prior_depths: Optional[torch.Tensor] = None, 
+        geometric_depths: Optional[torch.Tensor] = None
+    ):
         """
         1. Unify the format of all the inputs.
         2. Obtain the model-predicted affine-invariant depth map.
@@ -87,14 +101,24 @@ class DepthCompletion(torch.nn.Module):
             
         # Preprocess sparse_depths and prior depths.
         sparse_disparities = depth2disparity(sparse_depths)
-        prior_disparities = depth2disparity(prior_depths)
+        if prior_depths is not None:
+            prior_disparities = depth2disparity(prior_depths)
+        else:
+            prior_disparities = None
         
         return pred_disparities, sparse_disparities, sparse_masks, cover_masks, prior_disparities
         
     @torch.no_grad()
-    def forward(self, images: torch.Tensor, sparse_depths: torch.Tensor, sparse_masks: torch.Tensor, 
-            cover_masks=None, prior_depths=None, geometric_depths=None, pattern=None
-        ) -> Dict[str, torch.Tensor]:
+    def forward(self, 
+        images: torch.Tensor, 
+        sparse_depths: torch.Tensor, 
+        sparse_masks: torch.Tensor, 
+        cover_masks: Optional[torch.Tensor] = None, 
+        prior_depths: Optional[torch.Tensor] = None, 
+        geometric_depths: Optional[torch.Tensor] = None, 
+        pattern: Optional[str] = None, 
+        ret: str = 'all' # ret = 'knn' or 'global'
+    ) -> Dict[str, torch.Tensor]:
         """
         Processe input images and sparse depth information to produce completed depth maps.
         We use global alignment and KNN alignment to refine the depth predictions.
@@ -113,6 +137,7 @@ class DepthCompletion(torch.nn.Module):
                 - 'scaled_preds': A tensor representing the scaled depth predictions.
                 - 'global_preds': A tensor representing the globally aligned depth predictions.
         """
+        assert ret in ['global', 'knn', 'all'], "Unknown return type."
         
         pred_disparities, sparse_disparities, sparse_masks, cover_masks, prior_disparities = self.preprocess(
             images, sparse_depths, sparse_masks, cover_masks, prior_depths, geometric_depths
@@ -124,16 +149,24 @@ class DepthCompletion(torch.nn.Module):
         complete_masks = torch.ones_like(sparse_masks).to(torch.bool)
         complete_masks[sparse_masks] = False
         
+        
         # ================================== Global Alignment.
-        global_preds = self.ss_completer(
-            sparse_disparities=sparse_disparities,
-            pred_disparities=pred_disparities,
-            sparse_masks=sparse_masks
-        )
-        output['global_preds'] = global_preds
+        if ret != 'knn':
+            global_preds = self.ss_completer(
+                sparse_disparities=sparse_disparities,
+                pred_disparities=pred_disparities,
+                sparse_masks=sparse_masks
+            )
+            if ret == 'global':
+                # 
+                global_preds[sparse_masks] = sparse_disparities[sparse_masks]
+                return global_preds
+            output['global_preds'] = global_preds
+        
         
         # ================================== KNN Alignments.
         if self.args.double_global:
+            assert ret == 'all'
             scaled_preds = global_preds.clone()
             scaled_preds[sparse_masks] = sparse_disparities[sparse_masks]
         else:
@@ -141,45 +174,63 @@ class DepthCompletion(torch.nn.Module):
             scaled_preds = self.kss_completer(
                 sparse_disparities=sparse_disparities,
                 pred_disparities=pred_disparities,
-                sparse_masks=sparse_masks, K=self.K,
+                sparse_masks=sparse_masks, 
                 complete_masks=complete_masks,
+                K=self.K,
             )
             
-        """ Notes: The sparse points have been covered in the ss-/kss-completer. """
-        if cover_masks.sum() > 0:
+        """ 
+        Notes: The sparse points have been covered in the kss-completer. 
+        And we keep the 
+        """
+        if cover_masks is not None and cover_masks.sum() > 0:
             # To cover the large areas that have been known.
             scaled_preds[cover_masks] = prior_disparities[cover_masks]
         elif not pattern:
-            warnings.warn("The depth prior is directly provided by the user. All the known points will cover the knn-scaled map.")
+            warnings.warn(
+                "The depth prior is directly provided by the user. All the known points will cover the knn-scaled map.")
         else:
             assert not re.fullmatch(r'^cubic_\d+$', pattern)
             assert not re.fullmatch(r'^distance_\d+_\d+$', pattern)
+        if ret == 'knn':
+            return scaled_preds
         output['scaled_preds'] = scaled_preds
         
-        # ================================== Process the Uncertainty map.
-        cal_mask = (global_preds > 0.)
-        masked_scaled, scaled_global = scaled_preds[cal_mask], global_preds[cal_mask]
-        uctn = torch.abs(masked_scaled - scaled_global) / scaled_global
-        uncertainties = torch.zeros_like(scaled_preds, dtype=torch.float32)
-        uncertainties[cal_mask] = uctn
-
-        # If needed, normalize the Uncertainty.
-        if self.args.normalize_confidence:
-            uncertainties = (uncertainties - uncertainties.min()) / (uncertainties.max() - uncertainties.min())
-        output['uncertainties'] = uncertainties
         
+        # ================================== Process the Uncertainty map.
+        if self.args.extra_condition == 'error':
+            cal_mask = (global_preds > 0.)
+            masked_scaled, scaled_global = scaled_preds[cal_mask], global_preds[cal_mask]
+            uctn = torch.abs(masked_scaled - scaled_global) / scaled_global
+            uncertainties = torch.zeros_like(scaled_preds, dtype=torch.float32)
+            uncertainties[cal_mask] = uctn
+
+            # If needed, normalize the Uncertainty.
+            if self.args.normalize_confidence:
+                uncertainties = (uncertainties - uncertainties.min()) / (uncertainties.max() - uncertainties.min())
+            output['uncertainties'] = uncertainties
+        
+
         return output
         
     def init_depth_model(self, fmde_path):
         """ We only implement @depth-anything-v2 here, you can replace it with other depth estimation models. """
         from .depth_anything_v2 import build_backbone
-        depth_model = build_backbone(depth_size=self.args.frozen_model_size, model_path=fmde_path).to(self.device)
+        depth_model = build_backbone(
+            depth_size=self.args.frozen_model_size, 
+            model_path=fmde_path
+        ).to(self.device)
         depth_model.freeze_network({'encoder', 'decoder'})
         depth_model = depth_model.eval()
         
         return depth_model
     
-    def calc_scale_shift(self, k_sparse_targets, k_pred_targets, currk_dists=None, knn=False):
+    def calc_scale_shift(self, 
+        k_sparse_targets: torch.Tensor, 
+        k_pred_targets: torch.Tensor, 
+        currk_dists: Optional[torch.Tensor] = None, 
+        knn: bool = False
+    ):
         k_pred_targets += torch.rand(*k_pred_targets.shape, device=self.device) * 1e-5
         X = torch.stack([k_pred_targets, torch.ones_like(k_pred_targets, device=self.device)], dim=2)
         
@@ -192,8 +243,10 @@ class DepthCompletion(torch.nn.Module):
         
         return scale, shift
     
-    def perform_weighted(
-        self, sparse_ori : torch.Tensor, pred_ori : torch.Tensor, dists : torch.Tensor
+    def perform_weighted(self, 
+        sparse_ori : torch.Tensor, 
+        pred_ori : torch.Tensor, 
+        dists : torch.Tensor
     ) -> Tuple[torch.Tensor, ...]:
         """
         Perform weighted operations on input tensors using distance-based weights. A diagonal 
@@ -223,7 +276,13 @@ class DepthCompletion(torch.nn.Module):
         sparse_weighted = W @ sparse_ori.unsqueeze(-1)
         return sparse_weighted, pred_weighted
     
-    def knn_aligns(self, sparse_disparities, pred_disparities, sparse_masks, complete_masks, K) -> Tuple[torch.Tensor, ...]:
+    def knn_aligns(self, 
+        sparse_disparities: torch.Tensor, 
+        pred_disparities: torch.Tensor, 
+        sparse_masks: torch.Tensor, 
+        complete_masks: torch.Tensor, 
+        K: int
+    ) -> Tuple[torch.Tensor, ...]:
         """
         Perform K-Nearest Neighbors (KNN) alignment on sparse and predicted disparities.
     
@@ -261,7 +320,13 @@ class DepthCompletion(torch.nn.Module):
         
         return dists, k_sparse_targets, k_pred_targets
     
-    def kss_completer(self, sparse_disparities, pred_disparities, complete_masks, sparse_masks, K=5) -> torch.Tensor:
+    def kss_completer(self, 
+        sparse_disparities: torch.Tensor, 
+        pred_disparities: torch.Tensor, 
+        complete_masks: torch.Tensor, 
+        sparse_masks: torch.Tensor, 
+        K: int = 5
+    ) -> torch.Tensor:
         """
         Perform K-Nearest Neighbors (KNN) interpolation to complete sparse disparities.Use a batch-oriented 
         implementation of KNN interpolation to complete the sparse disparities. We leverages "torch_cluster.knn" 
@@ -282,14 +347,17 @@ class DepthCompletion(torch.nn.Module):
         bottomk_dists, k_sparse_targets, k_pred_targets = self.knn_aligns(
             sparse_disparities=sparse_disparities,
             pred_disparities=pred_disparities,
-            sparse_masks=sparse_masks, K=K, 
-            complete_masks=complete_masks
+            sparse_masks=sparse_masks, 
+            complete_masks=complete_masks,
+            K=K
         )
         
         scaled_preds = torch.zeros_like(sparse_disparities, device=self.device, dtype=torch.float32)
         scale, shift = self.calc_scale_shift(
-            k_sparse_targets=k_sparse_targets, k_pred_targets=k_pred_targets, 
-            currk_dists=bottomk_dists, knn=True
+            k_sparse_targets=k_sparse_targets, 
+            k_pred_targets=k_pred_targets, 
+            currk_dists=bottomk_dists, 
+            knn=True
         )
         
         # Apply scaling and shifting to the predicted disparities based on the nearest neighbors.
@@ -298,7 +366,11 @@ class DepthCompletion(torch.nn.Module):
         scaled_preds[sparse_masks] = sparse_disparities[sparse_masks]
         return scaled_preds
     
-    def global_aligns(self, sparse_disparities, pred_disparities, sparse_masks) -> Tuple[torch.Tensor, ...]:
+    def global_aligns(self, 
+        sparse_disparities: torch.Tensor, 
+        pred_disparities: torch.Tensor, 
+        sparse_masks: torch.Tensor
+    ) -> Tuple[torch.Tensor, ...]:
         """
         Perform global alignment on sparse and predicted disparities. Extract the valid disparities from 
         both sparse and predicted map based on the sparse masks.
@@ -320,7 +392,11 @@ class DepthCompletion(torch.nn.Module):
         
         return k_sparse_targets, k_pred_targets
     
-    def ss_completer(self, sparse_disparities, pred_disparities, sparse_masks) -> torch.Tensor:
+    def ss_completer(self, 
+        sparse_disparities: torch.Tensor, 
+        pred_disparities: torch.Tensor, 
+        sparse_masks: torch.Tensor
+    ) -> torch.Tensor:
         """
         Complete sparse disparities using a simple scaling and shifting approach. Perform a global 
         alignment of the sparse and predicted disparities, then applies a scaling and shifting 

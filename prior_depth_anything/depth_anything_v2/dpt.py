@@ -253,6 +253,6 @@ class DepthAnythingV2(nn.Module):
         raw_image = raw_image.to(device)
         
         h, w = raw_image.shape[-2:]
-        raw_image = raw_image / 255.0 
+        raw_image = raw_image[:, [2, 1, 0], :, :] / 255.0 
         images = transform({'image': raw_image})['image']
         return images, (h, w)

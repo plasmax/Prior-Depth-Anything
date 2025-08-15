@@ -165,7 +165,7 @@ priorda_image = torch.from_numpy(np.asarray(Image.open(image_names[0])).astype(n
 depth_map, depth_conf = predictions['depth'], predictions['depth_conf']
 refined_depth, meview_depth_map = Refiner.predict(
     image=priorda_image, depth_map=depth_map.squeeze(), confidence=depth_conf.squeeze())
-# The size of `refined_depth` is the same as `priorda_mage`, tune it to your need.
+# The size of `refined_depth` is the same as `priorda_image`, tune it to your need.
 ```
 We provide a whole example [here](./enhance_depth.py) including the performance comparison between the original depth map and the refined depth map. For quantitive evaluation results, please refer to our paper.
 

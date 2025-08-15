@@ -7,7 +7,7 @@ from huggingface_hub import hf_hub_download
 from datetime import datetime
 from PIL import Image
 import glob
-from typing import Union
+from typing import Union, Optional
 import time
 
 from .depth_anything_v2 import build_backbone
@@ -20,20 +20,29 @@ from .utils import (
     Arguments
 )
 
+EXTRA_CONDITION_FIXED_GROUPS = [
+    ('', 'error'), ('_1_1', 'spmask')
+]
+
 class PriorDepthAnything(nn.Module):
     def __init__(self, 
-            device='cuda:0', 
-            fmde_dir=None,
-            cmde_dir=None,
-            ckpt_dir=None,
-            frozen_model_size=None, 
-            conditioned_model_size=None,
-            coarse_only=False
-        ):
+        device: str = 'cuda:0', 
+        postfix: str = '',
+        extra_condition: str = 'spmask',
+        fmde_dir: Optional[str] = None,
+        cmde_dir: Optional[str] = None,
+        ckpt_dir: Optional[str] = None,
+        frozen_model_size: Optional[str] = None, 
+        conditioned_model_size: Optional[str] = None,
+        coarse_only: bool = False
+    ):
         super(PriorDepthAnything, self).__init__()
-        
         self.args = Arguments()
+        assert (postfix, extra_condition) in EXTRA_CONDITION_FIXED_GROUPS
+        self.args.extra_condition = extra_condition
+        
         self.device = device
+
         """ 
         For inference stability, we set the output coarse/fine globally. 
         TODO : You can easily modify the code to specify the model to output coarse/fine depth sample-wisely.
@@ -62,6 +71,7 @@ class PriorDepthAnything(nn.Module):
             if self.args.conditioned_model_size in ['vitl', 'vitg']:
                 raise ValueError(f'{self.args.conditioned_model_size} coming soon...')
             cmde_name = f'depth_anything_v2_{self.args.conditioned_model_size}.pth' # Download model checkpoints
+
             if cmde_dir is None:
                 cmde_path = hf_hub_download(repo_id=self.args.repo_name, filename=cmde_name)
             else:
@@ -71,14 +81,15 @@ class PriorDepthAnything(nn.Module):
             # Initialize and load preptrained `prior-depth-anything` models.
             model = build_backbone(
                 depth_size=self.args.conditioned_model_size, 
-                encoder_cond_dim=3, model_path=cmde_path
+                encoder_cond_dim=3, 
+                model_path=cmde_path
             ).eval()
-            self.model = self.load_checkpoints(model, ckpt_dir, self.device)
+            self.model = self.load_checkpoints(model, ckpt_dir, postfix, self.device)
             
-        self.sampler = SparseSampler(device=device)
+        self.sampler = SparseSampler(device=device, completion=self.completion)
     
-    def load_checkpoints(self, model, ckpt_dir, device='cuda:0'):
-        ckpt_name = f'prior_depth_anything_{self.args.conditioned_model_size}.pth'
+    def load_checkpoints(self, model, ckpt_dir, postfix='', device='cuda:0'):
+        ckpt_name = f'prior_depth_anything_{self.args.conditioned_model_size}{postfix}.pth'
         if ckpt_dir is None:
             ckpt_path = hf_hub_download(repo_id=self.args.repo_name, filename=ckpt_name)
         else:
@@ -95,14 +106,49 @@ class PriorDepthAnything(nn.Module):
         model.load_state_dict(new_state_dict)
         model = model.to(device)
         return model
+    
+    def calc_errors(self, gt, pred):
+        """Compute metrics for 'pred' compared to 'gt'
+
+        Args:
+            gt (torch.Tensor): Ground truth values
+            pred (torch.Tensor): Predicted values
+
+            gt.shape should be equal to pred.shape
+
+        Returns:
+            dict: Dictionary containing the following metrics:
+                'a1': Delta1 accuracy: Fraction of pixels that are within a scale factor of 1.25
+                'abs_rel': Absolute relative error
+                'rmse': Root mean squared error
+        """
+        thresh = torch.maximum((gt / pred), (pred / gt))
+        a1 = (thresh < 1.25).float().mean()
+        abs_rel = torch.mean(torch.abs(gt - pred) / gt)
+
+        rmse = (gt - pred) ** 2
+        rmse = torch.sqrt(rmse.mean())
+
+        return {k: v.item() for k, v in dict(a1=a1, abs_rel=abs_rel, rmse=rmse).items()}
         
-    def forward(self, images, sparse_depths, sparse_masks, cover_masks=None, prior_depths=None, geometric_depths=None, pattern=None):
+    def forward(self, 
+            images: torch.Tensor, 
+            sparse_depths: torch.Tensor, 
+            sparse_masks: torch.Tensor, 
+            cover_masks: torch.Tensor = None, 
+            prior_depths: torch.Tensor = None, 
+            geometric_depths: torch.Tensor = None, 
+            pattern: Optional[str] = None
+        ):
         """ To facilitate further research, we batchify the forward process. """
         ##### Coarse stage. #####
         completed_maps = self.completion(
-            images=images, sparse_depths=sparse_depths, 
-            sparse_masks=sparse_masks, cover_masks=cover_masks, 
-            prior_depths=prior_depths, pattern=pattern,
+            images=images, 
+            sparse_depths=sparse_depths, 
+            sparse_masks=sparse_masks, 
+            cover_masks=cover_masks, 
+            prior_depths=prior_depths, 
+            pattern=pattern,
             geometric_depths=geometric_depths
         )
         
@@ -126,9 +172,14 @@ class PriorDepthAnything(nn.Module):
             comp_cond = depth2disparity(comp_depths)
         condition = torch.cat([global_cond, comp_cond], dim=1)
         
-        if self.args.err_condition:
+        if self.args.extra_condition == 'error':
             uctns = completed_maps['uncertainties'].unsqueeze(1)
             condition = torch.cat([uctns, condition], dim=1)
+        elif self.args.extra_condition == 'spmask':
+            condition = torch.cat([sparse_masks, condition], dim=1)
+        else:
+            raise NotImplementedError(
+                "The extra condition can only be `error_map` or `sparse_map`.")
             
         # heit = sparse_depths.shape[-2] // 14 * 14
         heit = 518
@@ -175,7 +226,6 @@ class PriorDepthAnything(nn.Module):
         """
         
         print("Saving visual results...")
-        target = prior_depth
         scale, shift = prior_depth.max() - prior_depth.min(), prior_depth.min()
         
         gt_name = os.path.join(dir_name, 'gt_depth.*')
@@ -190,8 +240,15 @@ class PriorDepthAnything(nn.Module):
                 else:
                     raise NotImplementedError
                 
-                target = gt_depth
                 scale, shift = gt_depth.max() - gt_depth.min(), gt_depth.min()
+                
+                # calc_gt = torch.from_numpy(gt_depth).to(pred_depth.device)
+                # calc_mask = calc_gt > 0.
+                # pred_depth = pred_depth.squeeze()
+                # print(
+                #     self.calc_errors(calc_gt[calc_mask], pred_depth[calc_mask])
+                # )
+                
                 
                 log_img(
                     gt_depth.squeeze(),
@@ -226,9 +283,12 @@ class PriorDepthAnything(nn.Module):
     def infer_one_sample(self, 
         image: Union[str, torch.Tensor, np.ndarray] = None, 
         prior: Union[str, torch.Tensor, np.ndarray] = None, 
-        geometric: Union[str, torch.Tensor, np.ndarray] = None,
-        pattern: str = None, double_global=False, 
-        prior_cover=False, visualize=False
+        geometric: Union[str, torch.Tensor, np.ndarray, None] = None,
+        pattern: str = None, 
+        double_global: bool = False, 
+        prior_cover: bool = False, 
+        visualize: bool = False,
+        down_fill_mode: str = 'linear'
     ) -> torch.Tensor:
         """ Perform inference. Return the refined/completed depth.
         
@@ -274,10 +334,13 @@ class PriorDepthAnything(nn.Module):
         ### Load and preprocess example images
         # We implement preprocess with batch size of 1, but our model works for multi-images naturally.
         data = self.sampler(
-            image=image, prior=prior,
+            image=image, 
+            prior=prior,
             geometric=geometric,
-            pattern=pattern, K=self.args.K,
-            prior_cover=prior_cover
+            pattern=pattern, 
+            K=self.args.K,
+            prior_cover=prior_cover,
+            down_fill_mode=down_fill_mode
         )
         rgb, prior_depth, sparse_depth = data['rgb'], data['prior_depth'], data['sparse_depth'] # Shape: [B, C, H, W]
         cover_mask, sparse_mask = data['cover_mask'], data['sparse_mask'] # Shape: [B, 1, H, W]
@@ -288,8 +351,12 @@ class PriorDepthAnything(nn.Module):
         ### The core inference stage.
         """ If you want to input multiple samples at once, just stack samples at dim=0, s.t. [B, C, H, W] """
         pred_depth = self.forward(
-            images=rgb, sparse_depths=sparse_depth, prior_depths=prior_depth,
-            sparse_masks=sparse_mask, cover_masks=cover_mask, pattern=pattern,
+            images=rgb, 
+            sparse_depths=sparse_depth, 
+            prior_depths=prior_depth,
+            sparse_masks=sparse_mask, 
+            cover_masks=cover_mask, 
+            pattern=pattern,
             geometric_depths=geometric_depth
         ) # (B, 1, H, W)
         

@@ -8,14 +8,24 @@ import torch
 import torch_cluster
 import torch.nn.functional as F
 
-from typing import Dict
+from typing import Dict, Union, Optional
+from utils import save_vis
 
 class SparseSampler:
-    def __init__(self, device='cuda:0'):
+    def __init__(self, device='cuda:0', completion=None):
         self.device = device
         self.min_depth = 0.0001 # We always filter out depth <= 0.
+        self.completion = completion
 
-    def __call__(self, image, prior, geometric=None, pattern=None, K=5, prior_cover=False) -> Dict[str, torch.Tensor]:
+    def __call__(self, 
+        image: Union[str, torch.Tensor, np.ndarray], 
+        prior: Union[str, torch.Tensor, np.ndarray], 
+        geometric: Union[str, torch.Tensor, np.ndarray, None] = None,
+        pattern: Optional[str] = None, 
+        K: int = 5, 
+        prior_cover: bool = False,
+        down_fill_mode: str = 'linear'
+    ) -> Dict[str, torch.Tensor]:
         """
         1. Handles the loading and preprocessing of image and prior depth data. 
         2. Samples sparse depth points based on the provided pattern or prior depth information.
@@ -77,7 +87,7 @@ class SparseSampler:
                 np_prior = np.asarray(pil_prior).astype(np.float32)
                 ts_prior = torch.from_numpy(np_prior.copy())
         elif isinstance(prior, np.ndarray):
-            ts_prior = torch.from_numpy(np_prior)
+            ts_prior = torch.from_numpy(prior)
         elif isinstance(prior, torch.Tensor):
             ts_prior = prior.cpu()
         data['prior_depth'] = ts_prior.unsqueeze(0).unsqueeze(0)
@@ -90,11 +100,11 @@ class SparseSampler:
                     ts_geometric = torch.from_numpy(np_geometric)
                 else:
                     # The format should be compatible with Image.open
-                    pil_pgeometric = Image.open(geometric)
+                    pil_geometric = Image.open(geometric)
                     np_geometric = np.asarray(pil_geometric).astype(np.float32)
                     ts_geometric = torch.from_numpy(np_geometric.copy())
             elif isinstance(geometric, np.ndarray):
-                ts_geometric = torch.from_numpy(np_geometric)
+                ts_geometric = torch.from_numpy(geometric)
             elif isinstance(geometric, torch.Tensor):
                 ts_geometric = geometric.cpu()
             data['geometric_depth'] = ts_geometric.unsqueeze(0).unsqueeze(0)
@@ -102,7 +112,7 @@ class SparseSampler:
         # Sample the points manually if `pattern` is provided, otherwise use prior.
         if pattern or ts_prior.shape[-2:] != ts_image.shape[-2:]:
             sparse_depth, sparse_mask, cover_mask = self.get_sparse_depth(
-                image=np_image, prior=ts_prior, pattern=pattern
+                image=np_image, prior=ts_prior, pattern=pattern, down_fill_mode=down_fill_mode
             )
             
             # We do not implement hybrid-pattern here.
@@ -132,7 +142,7 @@ class SparseSampler:
         data = {k: v.to(self.device) for k, v in data.items() if v is not None}
         return data
     
-    def get_sparse_depth(self, image, prior, pattern=None):
+    def get_sparse_depth(self, image, prior, pattern=None, down_fill_mode='linear'):
         height, width, c = image.shape[-3:]
         low_height, low_width = prior.shape[-2:]
         
@@ -149,7 +159,8 @@ class SparseSampler:
             idx_nnz = torch.nonzero(prior.view(-1) > self.min_depth, as_tuple=False)
             num_idx = len(idx_nnz)
             if num_idx < num_sample:
-                warnings.warn(f"Aiming to sample {num_sample} points, but only {num_idx} valid points in the map.")
+                warnings.warn(
+                    f"Aiming to sample {num_sample} points, but only {num_idx} valid points in the map.")
                 
             idx_sample = torch.randperm(num_idx)[:num_sample]
             idx_nnz = idx_nnz[idx_sample[:]]
@@ -170,17 +181,39 @@ class SparseSampler:
                 factor = pattern.split("_")[-1]
                 factor = int(factor)
             
-                # Fill in the blank areas in the image.
-                filled_depth = self.interpolate_depths(prior, prior_mask, ~prior_mask)
+                # Fill in the blank areas in the image before downsampling.
+                if down_fill_mode == 'linear':
+                    filled_depth = self.linear_interpolate_depths(
+                        sparse_depths=prior, 
+                        sparse_masks=prior_mask, 
+                        complete_masks=~prior_mask
+                    )
+                else: # if down_fill_mode == 'global' or 'knn'
+                    inter_sparse_depth, inter_sparse_mask, inter_cover_mask = self.get_sparse_depth(
+                        image=image, prior=prior, pattern='2000', down_fill_mode=down_fill_mode
+                    )
+                    filled_depth = self.inpaint_interpolate_depths(
+                        image=image, 
+                        prior_depth=inter_sparse_depth, 
+                        prior_mask=inter_sparse_mask,
+                        ret=down_fill_mode
+                    )
+                
                 
                 # Downscale the prior depth map.
                 low_height, low_width = height // factor, width // factor
-                prior = F.interpolate(filled_depth.unsqueeze(0), size=(low_height, low_width), mode='bilinear', align_corners=True)
+                prior = F.interpolate(
+                    filled_depth.unsqueeze(0), 
+                    size=(low_height, low_width), 
+                    mode='bilinear', 
+                    align_corners=True
+                )
                 prior = prior.squeeze()
             
             # Insert the low-res prior depth map into the higher one.
             s_height, s_width = height / low_height, width / low_width
-            idx_height, idx_width = (s_height * torch.arange(low_height)).long(), (s_width * torch.arange(low_width)).long()
+            idx_height = (s_height * torch.arange(low_height)).long()
+            idx_width = (s_width * torch.arange(low_width)).long()
 
             down_mask = torch.zeros((height, width), dtype=torch.bool)
             down_mask[..., idx_height[:, None], idx_width] = True
@@ -219,7 +252,9 @@ class SparseSampler:
             cover_mask = torch.logical_and(
                 (prior > self.min_depth),
                 torch.logical_and(
-                    prior > low_dist, prior < high_dist)
+                    prior > low_dist, 
+                    prior < high_dist
+                )
             )
             
             range_depth = prior * cover_mask.type_as(prior)
@@ -297,7 +332,7 @@ class SparseSampler:
 
             mask = np.zeros([height, width])
             mask[points_2D_valid[1], points_2D_valid[0]] = 1.0
-            # only keep the orginal valid regions
+            # only keep the pred_disparitiesorginal valid regions
             mask = mask * (dep_np > self.min_depth).astype(float)
             
             sparse_mask = torch.from_numpy(mask).to(torch.bool)
@@ -306,13 +341,36 @@ class SparseSampler:
             
         else:
             raise NotImplementedError((
-                "'pattern' should be in format of ['^LiDAR_\d+$', 'sift', 'orb', '^cubic_\d+$', '^distance_\d+_\d+$'," 
+                "'pattern' should be in format of ['^LiDAR_\d+$', 'sift', "
+                "'orb', '^cubic_\d+$', '^distance_\d+_\d+$'," 
                 "'^downscale_\d*$', '(int)'], but the provided 'pattern' is -- '{}'".format(pattern)
             ))
         
         return sparse_depth, sparse_mask, cover_mask
     
-    def interpolate_depths(self, sparse_depths, sparse_masks, complete_masks):
+    
+    def inpaint_interpolate_depths(self, image, prior_depth, prior_mask, ret='scaled'):
+        from .utils import disparity2depth, log_img
+        
+        ori_device = 'cpu'
+        ts_image = torch.from_numpy(image.copy()).permute(2, 0, 1).to(torch.uint8)
+        
+        ts_image = ts_image.unsqueeze(0).to(self.device)
+        prior_depth = prior_depth.unsqueeze(0).to(self.device)
+        prior_mask = prior_mask.unsqueeze(0).to(self.device)
+        
+        completed_maps = self.completion(
+            images=ts_image, 
+            sparse_depths=prior_depth, 
+            sparse_masks=prior_mask, 
+            ret=ret
+        )
+        
+        filled_depth = disparity2depth(completed_maps)
+        return filled_depth.to(ori_device)
+        
+    
+    def linear_interpolate_depths(self, sparse_depths, sparse_masks, complete_masks):
         known_points = torch.nonzero(sparse_masks, as_tuple=False)[..., [0, 2, 1]].float() # [N, 3] (b, x, y)
         complete_depths = torch.nonzero(complete_masks, as_tuple=False)[..., [0, 2, 1]].float() # [M, 3] (b, x, y)
         
