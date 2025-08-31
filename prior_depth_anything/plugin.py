@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Union
+from typing import Union, Optional
 from PIL import Image
 
 from . import PriorDepthAnything
@@ -89,7 +89,8 @@ class PriorDARefiner(PriorDepthAnything):
         mde_dir: Optional[str] = None, 
         ckpt_dir: Optional[str] = None, 
         frozen_model_size: Optional[str] = None, 
-        conditioned_model_size: Optional[str] = None
+        conditioned_model_size: Optional[str] = None,
+        version="1.0"
     ):
         
         super(PriorDARefiner, self).__init__(
@@ -99,6 +100,7 @@ class PriorDARefiner(PriorDepthAnything):
             ckpt_dir=ckpt_dir,
             frozen_model_size=frozen_model_size, 
             conditioned_model_size=conditioned_model_size,
+            version=version
         )
         
         self.extra_samples = '500'

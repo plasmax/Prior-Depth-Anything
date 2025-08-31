@@ -64,19 +64,17 @@ if __name__ == '__main__':
     
     # Initialize vggt.
     print("Initialize VGGT and load the pretrained weights.")
-    vggt = VGGT().to(device)
-    ckpt_path = '/dataset/wangzh/omni_dc/ckpts/vggt/model.pt'
     vggt = VGGT.from_pretrained("facebook/VGGT-1B").to(device)
     print("VGGT loaded!")
 
     # Initialize prior-depth-anything module.
     from prior_depth_anything.plugin import PriorDARefiner, PriorDARefinerMetrics
-    Refiner = PriorDARefiner(device=device)
+    Refiner = PriorDARefiner(device=device, version="1.0", coarse_only=False)
 
     with torch.no_grad():
         ########## Depth-Estimation stage.
-        image_names = ['assets/sample-2/rgb.jpg']
-        depth_name = 'assets/sample-2/gt_depth.png'
+        image_names = ['assets/sample-4/rgb.jpg']
+        depth_name = 'assets/sample-4/gt_depth.png'
         images = load_and_preprocess_images(image_names).to(device)
 
         # Predict attributes including cameras, depth maps, and point maps.
