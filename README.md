@@ -21,7 +21,7 @@ This work presents Prior Depth Anything, a framework that combines incomplete bu
 ![comparison](assets/comparison.jpg)
 
 ## News
-- **2025-08-30:** We release our newly trained model [prior_depth_anything_1_1.pth](https://huggingface.co/Rain729/Prior-Depth-Anything/resolve/main/prior_depth_anything_vitb_1_1.pth) which replaces `sparse mask` with `error map` as the condition. `priorda-v1.1` shows better performance on dense patterns without any modification of network structures. Our additional evaluation results are shown [below](#evaluation-results). We also fixed several bugs mentioned in #issues.
+- **2025-08-30:** We release our newly trained model [prior_depth_anything_1_1.pth](https://huggingface.co/Rain729/Prior-Depth-Anything/resolve/main/prior_depth_anything_vitb_1_1.pth) which replaces `error map` with `sparse mask` as the condition. `priorda-v1.1` shows better performance on dense patterns without any modification of network structures. Our additional evaluation results are shown [below](#evaluation-results). We also fixed several bugs mentioned in #issues.
 - **2025-05-28:** We provide the code to measure inference latency. You can do it just by `python latency.py`
 - **2025-05-21:** We provide one more way to input your own geometric prior (To minimize code changes, we use "geometric" to represent the geometric prior).
 - **2025-05-15:** We released [Paper](https://arxiv.org/pdf/2505.10565), [Project Page](https://prior-depth-anything.github.io/), [Code](https://github.com/SpatialVision/Prior-Depth-Anything) and [Models](https://huggingface.co/Rain729/Prior-Depth-Anything)
