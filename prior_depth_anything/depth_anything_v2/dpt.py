@@ -213,9 +213,7 @@ class DepthAnythingV2(nn.Module):
             else:
                 print('Please input an existing parameters\' name...' )
                 
-    def init_state_dict(self, state_dict, **kwargs):
-        missing, unexpected = super().load_state_dict(state_dict=state_dict, strict=True)
-
+    def construct_aux_layers(self):
         self.depth_head.scratch.output_conv2 = nn.Sequential(
             self.depth_head.scratch.output_conv2,
             nn.ReLU(),
@@ -228,8 +226,6 @@ class DepthAnythingV2(nn.Module):
             del self.depth_head.scratch.refinenet4.resConfUnit1
         if hasattr(self.pretrained, 'mask_token'):
             del self.pretrained.mask_token
-            
-        return missing, unexpected
     
     def raw2input(self, raw_image, input_size=518, device='cuda'):
         assert isinstance(raw_image, torch.Tensor)

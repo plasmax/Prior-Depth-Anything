@@ -9,7 +9,6 @@ from .utils import (
     depth2disparity,
     disparity2depth
 )
-from utils import save_vis
 
 class DepthCompletion(torch.nn.Module):
     @staticmethod
@@ -210,20 +209,65 @@ class DepthCompletion(torch.nn.Module):
                 uncertainties = (uncertainties - uncertainties.min()) / (uncertainties.max() - uncertainties.min())
             output['uncertainties'] = uncertainties
         
-
         return output
         
     def init_depth_model(self, fmde_path):
-        """ We only implement @depth-anything-v2 here, you can replace it with other depth estimation models. """
+        """ We implement @depth-anything-v2 here, you can replace it with other depth estimation models. (like VGGT or moge ...)"""
         from .depth_anything_v2 import build_backbone
         depth_model = build_backbone(
-            depth_size=self.args.frozen_model_size, 
-            model_path=fmde_path
-        ).to(self.device)
+            depth_size=self.args.frozen_model_size
+        )
+        state_dict = torch.load(fmde_path, map_location='cpu')
+        depth_model.load_state_dict(state_dict=state_dict)
+        
+        depth_model.construct_aux_layers()
         depth_model.freeze_network({'encoder', 'decoder'})
-        depth_model = depth_model.eval()
+        depth_model = depth_model.eval().to(self.device)
         
         return depth_model
+
+        """
+        ### For VGGT: (Please also modify the call.)
+        from vggt.models.vggt import VGGT
+        from .depth_anything_v2.util.transform import Resize
+
+        # Initialize vggt.
+        print("Initialize VGGT and load the pretrained weights.")
+        vggt = VGGT.from_pretrained("facebook/VGGT-1B")
+        vggt = vggt.to(self.device).eval()
+        
+        @torch.no_grad()
+        def depth_model(images, input_size=518):
+            images = images.to(torch.float32) / 255.0
+            oh, ow = images.shape[-2:]
+            images = Resize(
+                width=input_size,
+                height=input_size,
+                resize_target=False,
+                keep_aspect_ratio=True,
+                ensure_multiple_of=14,
+                resize_method='lower_bound',
+                image_interpolation_method='bicubic',
+            )({'image': images})['image']
+
+            dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+            
+            with torch.cuda.amp.autocast(dtype=dtype):
+                images = images[None]  # add batch dimension
+                aggregated_tokens_list, ps_idx = vggt.aggregator(images)
+            # Predict Depth Maps
+            depth_map, depth_conf = vggt.depth_head(aggregated_tokens_list, images, ps_idx)
+            import torch.nn.functional as F
+            depths = F.interpolate(
+                depth_map.squeeze(-1), size=(oh, ow), mode='bilinear', align_corners=True
+            ).squeeze(1)
+            disparities = depth2disparity(depths)
+            
+            return disparities
+        print("VGGT loaded!")
+        return depth_model
+        
+        """
     
     def calc_scale_shift(self, 
         k_sparse_targets: torch.Tensor, 
@@ -308,7 +352,8 @@ class DepthCompletion(torch.nn.Module):
         x, y = batch_sparse[:, -2:].contiguous(), batch_complete[:, -2:].contiguous()
         
         # Use `torch_cluster.knn` to find K nearest neighbors.
-        knn_map = torch_cluster.knn(x=x, y=y, k=K, batch_x=batch_x, batch_y=batch_y) # [2, M * K]
+        with torch.cuda.device(self.device):
+            knn_map = torch_cluster.knn(x=x, y=y, k=K, batch_x=batch_x, batch_y=batch_y) # [2, M * K]
         knn_indices = knn_map[1, :].view(-1, K)
         
         k_sparse_targets = sparse_disparities[sparse_masks][knn_indices]

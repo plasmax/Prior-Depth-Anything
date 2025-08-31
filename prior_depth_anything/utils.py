@@ -27,10 +27,6 @@ class Arguments:
         default=True, 
         metadata={"help": "Whether to normalize confidence."}
     )
-    extra_condition: bool = field(
-        default="spmask", 
-        metadata={"help": "Whether to use error or spmask as condition."}
-    )
     double_global: bool = field(
         default=False, 
         metadata={"help": "Whether to use double globally-aligned conditions."}

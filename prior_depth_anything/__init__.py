@@ -20,17 +20,16 @@ from .utils import (
     Arguments
 )
 
-EXTRA_CONDITION_FIXED_GROUPS = [
-    ('', 'error'), ('_1_1', 'spmask')
-]
-
 class PriorDepthAnything(nn.Module):
+    VERSIONS = {
+        '1.0': ('', 'error'),
+        '1.1': ('_1_1', 'spmask')
+    }
+
     def __init__(self, 
         device: str = 'cuda:0', 
-        postfix: str = '',
-        extra_condition: str = 'spmask',
-        fmde_dir: Optional[str] = None,
-        cmde_dir: Optional[str] = None,
+        version: str = '1.1',
+        mde_dir: Optional[str] = None,
         ckpt_dir: Optional[str] = None,
         frozen_model_size: Optional[str] = None, 
         conditioned_model_size: Optional[str] = None,
@@ -38,7 +37,7 @@ class PriorDepthAnything(nn.Module):
     ):
         super(PriorDepthAnything, self).__init__()
         self.args = Arguments()
-        assert (postfix, extra_condition) in EXTRA_CONDITION_FIXED_GROUPS
+        postfix, extra_condition = self.VERSIONS[version]
         self.args.extra_condition = extra_condition
         
         self.device = device
@@ -57,10 +56,10 @@ class PriorDepthAnything(nn.Module):
         if self.args.frozen_model_size in ['vitg']:
             raise ValueError(f'{self.args.frozen_model_size} coming soon...')
         fmde_name = f'depth_anything_v2_{self.args.frozen_model_size}.pth' # Download model checkpoints
-        if fmde_dir is None:
+        if mde_dir is None:
             fmde_path = hf_hub_download(repo_id=self.args.repo_name, filename=fmde_name)
         else:
-            fmde_path = os.path.join(fmde_dir, fmde_name)
+            fmde_path = os.path.join(mde_dir, fmde_name)
         print(f"Loading pretrained fmde from {fmde_path}...")
         
         # Initialize Frozon-MDE.
@@ -70,21 +69,15 @@ class PriorDepthAnything(nn.Module):
         if not coarse_only:
             if self.args.conditioned_model_size in ['vitl', 'vitg']:
                 raise ValueError(f'{self.args.conditioned_model_size} coming soon...')
-            cmde_name = f'depth_anything_v2_{self.args.conditioned_model_size}.pth' # Download model checkpoints
-
-            if cmde_dir is None:
-                cmde_path = hf_hub_download(repo_id=self.args.repo_name, filename=cmde_name)
-            else:
-                cmde_path = os.path.join(cmde_dir, cmde_name)
-            print(f"Loading pretrained cmde from {cmde_path}...")
         
             # Initialize and load preptrained `prior-depth-anything` models.
             model = build_backbone(
                 depth_size=self.args.conditioned_model_size, 
-                encoder_cond_dim=3, 
-                model_path=cmde_path
-            ).eval()
-            self.model = self.load_checkpoints(model, ckpt_dir, postfix, self.device)
+                encoder_cond_dim=3
+            )
+            model.construct_aux_layers()
+
+            self.model = self.load_checkpoints(model, ckpt_dir, postfix, self.device).eval()
             
         self.sampler = SparseSampler(device=device, completion=self.completion)
     
@@ -106,30 +99,6 @@ class PriorDepthAnything(nn.Module):
         model.load_state_dict(new_state_dict)
         model = model.to(device)
         return model
-    
-    def calc_errors(self, gt, pred):
-        """Compute metrics for 'pred' compared to 'gt'
-
-        Args:
-            gt (torch.Tensor): Ground truth values
-            pred (torch.Tensor): Predicted values
-
-            gt.shape should be equal to pred.shape
-
-        Returns:
-            dict: Dictionary containing the following metrics:
-                'a1': Delta1 accuracy: Fraction of pixels that are within a scale factor of 1.25
-                'abs_rel': Absolute relative error
-                'rmse': Root mean squared error
-        """
-        thresh = torch.maximum((gt / pred), (pred / gt))
-        a1 = (thresh < 1.25).float().mean()
-        abs_rel = torch.mean(torch.abs(gt - pred) / gt)
-
-        rmse = (gt - pred) ** 2
-        rmse = torch.sqrt(rmse.mean())
-
-        return {k: v.item() for k, v in dict(a1=a1, abs_rel=abs_rel, rmse=rmse).items()}
         
     def forward(self, 
             images: torch.Tensor, 
@@ -226,6 +195,7 @@ class PriorDepthAnything(nn.Module):
         """
         
         print("Saving visual results...")
+        prior_depth = prior_depth.squeeze().cpu().numpy()
         scale, shift = prior_depth.max() - prior_depth.min(), prior_depth.min()
         
         gt_name = os.path.join(dir_name, 'gt_depth.*')
@@ -242,14 +212,6 @@ class PriorDepthAnything(nn.Module):
                 
                 scale, shift = gt_depth.max() - gt_depth.min(), gt_depth.min()
                 
-                # calc_gt = torch.from_numpy(gt_depth).to(pred_depth.device)
-                # calc_mask = calc_gt > 0.
-                # pred_depth = pred_depth.squeeze()
-                # print(
-                #     self.calc_errors(calc_gt[calc_mask], pred_depth[calc_mask])
-                # )
-                
-                
                 log_img(
                     gt_depth.squeeze(),
                     os.path.join(log_dir, 'gt_norm.png'),
@@ -257,7 +219,6 @@ class PriorDepthAnything(nn.Module):
                     scale=scale, shift=shift
                 )
         
-        prior_depth = prior_depth.squeeze().cpu().numpy()
         log_img(
             prior_depth,
             os.path.join(log_dir, 'prior_norm.png'),

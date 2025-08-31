@@ -9,10 +9,5 @@ model_configs = {
     'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
 }
 
-def build_backbone(depth_size='vitb', encoder_cond_dim=-1, model_path=None):
-    core = DepthAnythingV2(**model_configs[depth_size], encoder_cond_dim=encoder_cond_dim)
-
-    state_dict = torch.load(model_path, map_location='cpu')
-    core.init_state_dict(state_dict=state_dict)
-    
-    return core
+def build_backbone(depth_size='vitb', encoder_cond_dim=-1):
+    return DepthAnythingV2(**model_configs[depth_size], encoder_cond_dim=encoder_cond_dim)

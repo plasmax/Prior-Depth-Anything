@@ -9,7 +9,6 @@ import torch_cluster
 import torch.nn.functional as F
 
 from typing import Dict, Union, Optional
-from utils import save_vis
 
 class SparseSampler:
     def __init__(self, device='cuda:0', completion=None):

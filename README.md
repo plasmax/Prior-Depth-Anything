@@ -21,6 +21,7 @@ This work presents Prior Depth Anything, a framework that combines incomplete bu
 ![comparison](assets/comparison.jpg)
 
 ## News
+- **2025-08-30:** We release our newly trained model [prior_depth_anything_1_1.pth](https://huggingface.co/Rain729/Prior-Depth-Anything/resolve/main/prior_depth_anything_vitb_1_1.pth) which replaces `sparse mask` with `error map` as the condition. `priorda-v1.1` shows better performance on dense patterns without any modification of network structures. Our additional evaluation results are shown [below](#evaluation-results). We also fixed several bugs mentioned in #issues.
 - **2025-05-28:** We provide the code to measure inference latency. You can do it just by `python latency.py`
 - **2025-05-21:** We provide one more way to input your own geometric prior (To minimize code changes, we use "geometric" to represent the geometric prior).
 - **2025-05-15:** We released [Paper](https://arxiv.org/pdf/2505.10565), [Project Page](https://prior-depth-anything.github.io/), [Code](https://github.com/SpatialVision/Prior-Depth-Anything) and [Models](https://huggingface.co/Rain729/Prior-Depth-Anything)
@@ -37,6 +38,7 @@ First, clone this repository and create environment with `python=3.9`.
 ```bash
 git clone https://github.com/SpatialVision/Prior-Depth-Anything
 cd Prior-Depth-Anything
+
 conda create -n priorda python=3.9
 conda activate priorda
 ```
@@ -50,10 +52,10 @@ pip install -e .
 ```
 
 ### Quick start:
-To run with CLI, you can just begin by following command (Installing `Prior-Depth-Anything` as a package is required.). On the initial execution, the [model weights](#Pretrained-Models) will be automatically downloaded from the Hugging Face Model Hub.
+To run with CLI, you can begin by following command (Installing `Prior-Depth-Anything` as a package is required.). On the initial execution, the [model weights](#Pretrained-Models) will be automatically downloaded from the Hugging Face Model Hub.
 ```bash
 # We sample on Ground-Truth depth map as prior.
-priorda test --image_path assets/sample-1/rgb.jpg --prior_path assets/sample-1/gt_depth.png --pattern downscale_32 --visualize 1 
+priorda test --image_path assets/sample-1/rgb.jpg --prior_path assets/sample-1/gt_depth.png --pattern 1000 --visualize 1 
 ```
 
 Alternatively, you can use our model with:
@@ -99,8 +101,7 @@ We provide two ways that allow you to utilize geometric information from other d
 ### More options:
 
 #### &ensp;&ensp;Model Configurations
-- `fmde_dir`: Directory of the coarse-stage coarse alignment model backbone.
-- `cmde_dir`: Directory of the fine-stage fine alignment model backbone.
+- `mde_dir`: Directory of the monocular depth model backbone.
 - `ckpt_dir`: Directory of the fine-stage model fintuned by us.
 - `frozen_model_size`: Specify the size of the coarse-stage model(choices=['vits', 'vitb', 'vitl']).
 - `conditioned_model_size`: Specify the size of the fine-stage model(choices=['vits', 'vitb', 'vitl'(coming soon...)]).
@@ -167,7 +168,18 @@ refined_depth, meview_depth_map = Refiner.predict(
     image=priorda_image, depth_map=depth_map.squeeze(), confidence=depth_conf.squeeze())
 # The size of `refined_depth` is the same as `priorda_image`, tune it to your need.
 ```
-We provide a whole example [here](./enhance_depth.py) including the performance comparison between the original depth map and the refined depth map. For quantitive evaluation results, please refer to our paper.
+We provide a complete example [here](./enhance_depth.py) including the performance comparison between the original depth map and the refined depth map. For quantitive evaluation results, please refer to our paper.
+
+## Evaluation results
+In addition to the results in our paper, we evaluate our **v1.1** model and list the results below.
+- **Mixed Prior**.
+![mix](./assets/v_1_1results/mixed_prior.png)
+- **Depth Completion**.
+![sparse](./assets/v_1_1results/sparse_prior.png)
+- **Depth Super-Resolution**.
+![lowres](./assets/v_1_1results/lowres_prior.png)
+- **Depth Inpainting**.
+![area](./assets/v_1_1results/area_prior.png)
 
 ## Acknowledgement
 

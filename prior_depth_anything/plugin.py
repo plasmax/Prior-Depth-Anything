@@ -86,8 +86,7 @@ class PriorDARefiner(PriorDepthAnything):
     def __init__(self, 
         device: str = 'cuda:0', 
         coarse_only: bool = False, 
-        fmde_dir: Optional[str] = None, 
-        cmde_dir: Optional[str] = None,
+        mde_dir: Optional[str] = None, 
         ckpt_dir: Optional[str] = None, 
         frozen_model_size: Optional[str] = None, 
         conditioned_model_size: Optional[str] = None
@@ -96,8 +95,7 @@ class PriorDARefiner(PriorDepthAnything):
         super(PriorDARefiner, self).__init__(
             device=device, 
             coarse_only=coarse_only, 
-            fmde_dir=fmde_dir, 
-            cmde_dir=cmde_dir, 
+            mde_dir=mde_dir, 
             ckpt_dir=ckpt_dir,
             frozen_model_size=frozen_model_size, 
             conditioned_model_size=conditioned_model_size,
