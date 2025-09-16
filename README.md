@@ -51,6 +51,22 @@ or you can install `Prior-Depth-Anything` as a package.
 pip install -e .
 ```
 
+### Prebuilt Apptainer container
+
+For headless deployments and Nuke integrations, an Apptainer definition is
+available at [`apptainer/prior-depth-anything.def`](apptainer/prior-depth-anything.def).
+The accompanying GitHub Actions workflow `Build Apptainer Image` constructs the
+container on every push that touches the model code or definition (or when
+triggered manually) and uploads the resulting `.sif` artifact. You can download
+the artifact from the workflow run summary and execute the packaged tooling via:
+
+```bash
+apptainer exec prior-depth-anything.sif python tools/export_nuke_torchscript.py --help
+```
+
+This image includes the repository checkout at build time together with all
+Python dependencies pinned by `requirements.txt`.
+
 ### Quick start:
 To run with CLI, you can begin by following command (Installing `Prior-Depth-Anything` as a package is required.). On the initial execution, the [model weights](#Pretrained-Models) will be automatically downloaded from the Hugging Face Model Hub.
 ```bash
