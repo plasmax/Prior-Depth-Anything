@@ -162,13 +162,48 @@ Refiner = PriorDARefiner(device=device)
 # Reload RGB for refiner.
 priorda_image = torch.from_numpy(np.asarray(Image.open(image_names[0])).astype(np.uint8))
 
-### Refine depth 
+### Refine depth
 depth_map, depth_conf = predictions['depth'], predictions['depth_conf']
 refined_depth, meview_depth_map = Refiner.predict(
     image=priorda_image, depth_map=depth_map.squeeze(), confidence=depth_conf.squeeze())
 # The size of `refined_depth` is the same as `priorda_image`, tune it to your need.
 ```
 We provide a complete example [here](./enhance_depth.py) including the performance comparison between the original depth map and the refined depth map. For quantitive evaluation results, please refer to our paper.
+
+## Exporting to Nuke
+
+The repository ships with `tools/export_nuke_torchscript.py` which turns Prior Depth Anything
+into a TorchScript module that follows Nuke's CAT file requirements. The wrapper expects five
+input channels laid out as `rgba.red`, `rgba.green`, `rgba.blue`, `rgba.alpha`, and `depth.Z`,
+where:
+
+- RGB stores the colour input scaled to `[0, 1]`.
+- `rgba.alpha` encodes the validity mask for the prior depth values.
+- `depth.Z` contains the sparse prior depth in metric units.
+
+To create the TorchScript module run:
+
+```bash
+python tools/export_nuke_torchscript.py \
+  --output exports/priorda_nuke.pt \
+  --device cuda:0 \
+  --mde-dir /path/to/frozen_weights \
+  --ckpt-dir /path/to/prior_depth_anything_weights
+```
+
+If the checkpoints are already cached with the package defaults the `--mde-dir` and `--ckpt-dir`
+arguments can be omitted. The script performs a `torch.jit.trace` by default; add `--use-script`
+to compile with TorchScript scripting instead. The resulting `.pt` file can be converted into a
+`.cat` file using Nuke's **CatFileCreator** node with the following settings:
+
+- **Channels In** – `rgba.red rgba.green rgba.blue rgba.alpha depth.Z`
+- **Channels Out** – map channel `0` to `depth.Z` and channel `1` to `rgba.alpha`
+- **Model ID** – choose a descriptive name, for example `PriorDepthAnything`
+
+The exported module preserves device and dtype behaviour so Nuke's *Use GPU if available* and
+*Optimise for speed and Memory* knobs continue to work. Ensure your Nuke environment uses the
+matching PyTorch/TorchScript version (for example PyTorch 1.12.1 on CUDA 11.3) when creating the
+CAT file, as recommended in Foundry's documentation.
 
 ## Evaluation results
 In addition to the results in our paper, we evaluate our **v1.1** model and list the results below.
