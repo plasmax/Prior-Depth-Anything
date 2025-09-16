@@ -2,14 +2,6 @@ name: Build Apptainer Image
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - 'apptainer/**'
-      - '.github/workflows/build-apptainer.yml'
-      - 'requirements.txt'
-      - 'setup.py'
-      - 'prior_depth_anything/**'
 
 jobs:
   build:
