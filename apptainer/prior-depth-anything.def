@@ -1,0 +1,37 @@
+Bootstrap: docker
+From: python:3.9-slim
+
+%labels
+    Author "Prior Depth Anything Maintainers"
+    Description "Apptainer image with Prior Depth Anything and dependencies"
+
+%help
+    This container bundles the Prior Depth Anything repository together with its
+    Python dependencies so it can be consumed from Nuke or other host
+    applications.
+
+%files
+    .. /opt/Prior-Depth-Anything
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONPATH=/opt/Prior-Depth-Anything:${PYTHONPATH}
+
+%post
+    set -e
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+    python -m pip install --upgrade pip setuptools wheel
+    cd /opt/Prior-Depth-Anything
+    python -m pip install --no-cache-dir -f https://data.pyg.org/whl/torch-2.2.2+cpu.html -r requirements.txt
+    python -m pip install --no-cache-dir -e .
+    rm -rf /root/.cache/pip
+
+%runscript
+    exec python "$@"

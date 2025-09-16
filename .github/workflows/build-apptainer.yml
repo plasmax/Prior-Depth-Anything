@@ -1,0 +1,41 @@
+name: Build Apptainer Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'apptainer/**'
+      - '.github/workflows/build-apptainer.yml'
+      - 'requirements.txt'
+      - 'setup.py'
+      - 'prior_depth_anything/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Apptainer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apptainer
+
+      - name: Build container image
+        run: |
+          sudo apptainer build priorda.sif apptainer/prior-depth-anything.def
+          sudo chown "${USER}:${USER}" priorda.sif
+
+      - name: Smoke test container
+        run: |
+          apptainer exec priorda.sif python -c "import torch, prior_depth_anything; print('Torch version:', torch.__version__)"
+
+      - name: Upload container artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prior-depth-anything-apptainer-${{ github.sha }}
+          path: priorda.sif
+          if-no-files-found: error
